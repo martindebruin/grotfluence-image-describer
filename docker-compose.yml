@@ -9,6 +9,8 @@ services:
       - OLLAMA_URL=http://rpi-ai:11434
       - VISION_MODEL=llava-phi3
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - WEB_USERNAME=${WEB_USERNAME:-martin}
+      - WEB_PASSWORD=${WEB_PASSWORD}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_ALLOWED_USER_ID=${TELEGRAM_ALLOWED_USER_ID}
       - WP_URL=https://grötfluence.se

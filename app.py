@@ -5,8 +5,10 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 import httpx
 import anthropic
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
+import secrets
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 app = FastAPI()
 
@@ -14,6 +16,9 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://rpi-ai:11434")
 VISION_MODEL = os.getenv("VISION_MODEL", "llava-phi3")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 TEXT_MODEL = os.getenv("TEXT_MODEL", "claude-haiku-4-5-20251001")
+
+WEB_USERNAME = os.getenv("WEB_USERNAME", "martin")
+WEB_PASSWORD = os.getenv("WEB_PASSWORD")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_ALLOWED_USER_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID")
@@ -56,14 +61,30 @@ POST_SYSTEM_PROMPT = (
 )
 
 
+_security = HTTPBasic()
+
+def require_auth(credentials: HTTPBasicCredentials = Depends(_security)):
+    ok = (
+        WEB_PASSWORD
+        and secrets.compare_digest(credentials.username.encode(), WEB_USERNAME.encode())
+        and secrets.compare_digest(credentials.password.encode(), WEB_PASSWORD.encode())
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+
 @app.get("/", response_class=HTMLResponse)
-async def index():
+async def index(_: None = Depends(require_auth)):
     with open("/app/index.html") as f:
         return f.read()
 
 
 @app.post("/describe")
-async def describe(file: UploadFile = File(...)):
+async def describe(file: UploadFile = File(...), _: None = Depends(require_auth)):
     if not ANTHROPIC_API_KEY:
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not set")
 
