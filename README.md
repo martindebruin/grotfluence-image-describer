@@ -9,7 +9,7 @@ Send a photo to a Telegram bot → AI describes it → Claude writes a sarcastic
 ```
 Telegram photo
     ↓
-llava-phi3 on Raspberry Pi 5  →  English visual description
+llava-phi3 on a Raspberry Pi  →  English visual description
     ↓
 Claude Haiku  →  Swedish title + caption + meal category + ingredient tags
     ↓
@@ -23,7 +23,7 @@ Telegram reply with post URL
 ### Requirements
 
 - Docker + Docker Compose
-- Ollama running somewhere with `llava-phi3` loaded (see [rpi-ai setup](#rpi-ai))
+- Ollama running somewhere with `llava-phi3` loaded
 - Anthropic API key
 - Telegram bot token (from [@BotFather](https://t.me/BotFather))
 - WordPress site with REST API enabled and an Application Password
@@ -34,15 +34,18 @@ Copy `.env.example` to `.env` and fill in:
 
 ```
 ANTHROPIC_API_KEY=
+WEB_PASSWORD=                # password for the web UI (username defaults to "martin")
 TELEGRAM_BOT_TOKEN=
+TELEGRAM_WEBHOOK_SECRET=     # random string — set when registering the webhook
 TELEGRAM_ALLOWED_USER_ID=    # numeric Telegram user ID — get from @userinfobot
 WP_USERNAME=
 WP_APP_PASSWORD=             # WP Admin → Users → Profile → Application Passwords
 ```
 
 `WP_URL` defaults to `https://grötfluence.se`. Override in `docker-compose.yml` if needed.
+`OLLAMA_URL` defaults to `http://ollama-host:11434`. Override to point at your Ollama instance.
 
-### Run locally
+### Run
 
 ```bash
 docker compose up -d --build
@@ -53,10 +56,10 @@ App listens on port 4545.
 ### Register Telegram webhook
 
 ```bash
-curl "https://api.telegram.org/bot{TOKEN}/setWebhook?url=https://your-domain.com/telegram/webhook"
+curl "https://api.telegram.org/bot{TOKEN}/setWebhook?url=https://your-domain.com/telegram/webhook&secret_token={WEBHOOK_SECRET}"
 ```
 
-### Deploy to server
+### Deploy to a server
 
 ```bash
 bash deploy.sh
@@ -76,8 +79,8 @@ bash deploy.sh
 
 ## Web UI
 
-The app also exposes a simple web UI at `/` for manual caption generation (original functionality).
+The app also exposes a simple web UI at `/` for manual caption generation, protected by HTTP Basic Auth.
 
-## rpi-ai
+## Ollama / vision model
 
-The vision model runs on a Raspberry Pi 5 with Hailo-10H accelerator via Ollama. The container reaches it via Tailscale hostname `rpi-ai`. The `extra_hosts` entry in `docker-compose.yml` maps this to the Pi's Tailscale IP.
+The vision model (`llava-phi3`) can run on any machine reachable from the Docker container. Set `OLLAMA_URL` and the `extra_hosts` entry in `docker-compose.yml` accordingly.
