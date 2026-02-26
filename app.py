@@ -21,6 +21,7 @@ WEB_USERNAME = os.getenv("WEB_USERNAME", "martin")
 WEB_PASSWORD = os.getenv("WEB_PASSWORD")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET")
 TELEGRAM_ALLOWED_USER_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID")
 WP_URL = os.getenv("WP_URL", "https://grötfluence.se")
 WP_USERNAME = os.getenv("WP_USERNAME")
@@ -309,6 +310,11 @@ async def _process_telegram_photo(chat_id: int, file_id: str, filename: str, tel
 @app.post("/telegram/webhook")
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     """Receive Telegram updates. Respond immediately; process photo in background."""
+    if TELEGRAM_WEBHOOK_SECRET:
+        token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if not secrets.compare_digest(token, TELEGRAM_WEBHOOK_SECRET):
+            return JSONResponse({"ok": False}, status_code=401)
+
     update = await request.json()
 
     message = update.get("message") or update.get("channel_post")
