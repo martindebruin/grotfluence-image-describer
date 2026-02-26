@@ -1,0 +1,17 @@
+services:
+  image-describer:
+    build: .
+    ports:
+      - "4545:4545"
+    extra_hosts:
+      - "rpi-ai:100.125.38.59"
+    environment:
+      - OLLAMA_URL=http://rpi-ai:11434
+      - VISION_MODEL=llava-phi3
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_ALLOWED_USER_ID=${TELEGRAM_ALLOWED_USER_ID}
+      - WP_URL=https://grötfluence.se
+      - WP_USERNAME=${WP_USERNAME}
+      - WP_APP_PASSWORD=${WP_APP_PASSWORD}
+    restart: unless-stopped
