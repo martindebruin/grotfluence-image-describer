@@ -3,12 +3,11 @@ services:
     build: .
     ports:
       - "4545:4545"
-    extra_hosts:
-      - "rpi-ai:100.125.38.59"
     environment:
-      - OLLAMA_URL=http://rpi-ai:11434
-      - VISION_MODEL=llava-phi3
+      - VISION_BASE_URL=http://frmwrk-ai:8082/v1
+      - VISION_MODEL=qwen2.5vl:3b-gpu
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - PYTHONUNBUFFERED=1
       - WEB_USERNAME=${WEB_USERNAME:-martin}
       - WEB_PASSWORD=${WEB_PASSWORD}
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
@@ -17,4 +16,19 @@ services:
       - WP_URL=https://grötfluence.se
       - WP_USERNAME=${WP_USERNAME}
       - WP_APP_PASSWORD=${WP_APP_PASSWORD}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  dashboard:
+    image: datasetteproject/datasette
+    volumes:
+      - ./data:/data
+    command: >
+      datasette /data/quality.db
+      --host 0.0.0.0
+      --port 8001
+      --setting default_cache_ttl 0
+    ports:
+      - "4546:8001"
     restart: unless-stopped
