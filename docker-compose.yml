@@ -6,6 +6,9 @@ services:
     environment:
       - VISION_BASE_URL=http://frmwrk-ai:8082/v1
       - VISION_MODEL=qwen2.5vl:3b-gpu
+      - TEXT_PROVIDER=${TEXT_PROVIDER:-openai}
+      - TEXT_BASE_URL=http://frmwrk-ai:8080/v1
+      - TEXT_MODEL=${TEXT_MODEL:-mistral-small:24b}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - PYTHONUNBUFFERED=1
       - WEB_USERNAME=${WEB_USERNAME:-martin}
@@ -13,11 +16,16 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET}
       - TELEGRAM_ALLOWED_USER_ID=${TELEGRAM_ALLOWED_USER_ID}
-      - WP_URL=https://grötfluence.se
-      - WP_USERNAME=${WP_USERNAME}
-      - WP_APP_PASSWORD=${WP_APP_PASSWORD}
+      - DIRECTUS_URL=${DIRECTUS_URL}
+      - DIRECTUS_TOKEN=${DIRECTUS_TOKEN}
+      - BLOG_URL=${BLOG_URL}
     volumes:
       - ./data:/app/data
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    extra_hosts:
+      - "frmwrk-ai:100.98.25.111"
     restart: unless-stopped
 
   dashboard:

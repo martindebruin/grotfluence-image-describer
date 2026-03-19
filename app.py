@@ -2,6 +2,8 @@ import asyncio
 import os
 import base64
 import imghdr
+import re
+import unicodedata
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
@@ -15,6 +17,9 @@ from quality import QualityChecker
 
 VISION_BASE_URL = os.getenv("VISION_BASE_URL", "http://frmwrk-ai:8082/v1")
 VISION_MODEL = os.getenv("VISION_MODEL", "qwen2.5vl:3b-gpu")
+TEXT_BASE_URL = os.getenv("TEXT_BASE_URL", "http://frmwrk-ai:8080/v1")
+TEXT_MODEL = os.getenv("TEXT_MODEL", "mistral-small:24b")
+TEXT_PROVIDER = os.getenv("TEXT_PROVIDER", "openai")  # "openai" or "anthropic"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
 WEB_USERNAME = os.getenv("WEB_USERNAME", "martin")
@@ -23,9 +28,10 @@ WEB_PASSWORD = os.getenv("WEB_PASSWORD")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET")
 TELEGRAM_ALLOWED_USER_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID")
-WP_URL = os.getenv("WP_URL", "https://grötfluence.se")
-WP_USERNAME = os.getenv("WP_USERNAME")
-WP_APP_PASSWORD = os.getenv("WP_APP_PASSWORD")
+
+DIRECTUS_URL = os.getenv("DIRECTUS_URL", "https://cms.xn--grtfluence-fcb.se")
+DIRECTUS_TOKEN = os.getenv("DIRECTUS_TOKEN")
+BLOG_URL = os.getenv("BLOG_URL", "https://xn--grtfluence-fcb.se")
 
 MEDIA_TYPES = {
     "jpeg": "image/jpeg",
@@ -97,11 +103,10 @@ _pending_post: dict | None = None
 @asynccontextmanager
 async def lifespan(app):
     global _quality_checker
-    if WP_USERNAME and WP_APP_PASSWORD:
+    if DIRECTUS_TOKEN:
         _quality_checker = QualityChecker(
-            wp_url=WP_URL,
-            wp_username=WP_USERNAME,
-            wp_app_password=WP_APP_PASSWORD,
+            directus_url=DIRECTUS_URL,
+            directus_token=DIRECTUS_TOKEN,
         )
         await _quality_checker.ensure_db()
         await _quality_checker.refresh_index(force=True)
@@ -217,25 +222,43 @@ async def send_telegram_message(chat_id: int, text: str) -> None:
 
 
 async def generate_post_content(description: str, current_time: str, telegram_caption: str = "") -> dict:
-    """Call Claude Haiku to get title, caption, meal_type and tags in Swedish."""
+    """Generate title, caption, meal_type and tags in Swedish using the configured text model."""
     import json
-    import anthropic
 
     user_note = f"\nAnvändarens notat: {telegram_caption}" if telegram_caption.strip() else ""
-
-    client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-    msg = await client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=512,
-        system=POST_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": (
-            f"Aktuell tid: {current_time}.\n"
-            f"Bildbeskrivning: {description}"
-            f"{user_note}\n\n"
-            "Returnera JSON."
-        )}],
+    user_message = (
+        f"Aktuell tid: {current_time}.\n"
+        f"Bildbeskrivning: {description}"
+        f"{user_note}\n\n"
+        "Returnera JSON."
     )
-    raw = msg.content[0].text.strip()
+
+    if TEXT_PROVIDER == "anthropic":
+        import anthropic
+        client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        msg = await client.messages.create(
+            model=TEXT_MODEL,
+            max_tokens=512,
+            system=POST_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        raw = msg.content[0].text.strip()
+    else:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=120.0)) as client:
+            resp = await client.post(
+                f"{TEXT_BASE_URL}/chat/completions",
+                json={
+                    "model": TEXT_MODEL,
+                    "stream": False,
+                    "messages": [
+                        {"role": "system", "content": POST_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message},
+                    ],
+                },
+            )
+            resp.raise_for_status()
+            raw = resp.json()["choices"][0]["message"]["content"].strip()
+
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
@@ -243,91 +266,130 @@ async def generate_post_content(description: str, current_time: str, telegram_ca
     return json.loads(raw.strip())
 
 
-async def get_or_create_wp_term(client: httpx.AsyncClient, taxonomy: str, name: str, auth_header: dict) -> int:
-    """Return WordPress term ID for the given taxonomy and name, creating it if it doesn't exist."""
-    search_resp = await client.get(
-        f"{WP_URL}/wp-json/wp/v2/{taxonomy}",
+def _slugify(text: str) -> str:
+    """Generate a URL-friendly slug from a Swedish title."""
+    text = unicodedata.normalize("NFD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9]+", "-", text)
+    return text.strip("-")
+
+
+async def get_or_create_directus_term(
+    client: httpx.AsyncClient, collection: str, name: str, auth_header: dict
+) -> int:
+    """Return Directus item ID for the given collection and name, creating it if missing."""
+    resp = await client.get(
+        f"{DIRECTUS_URL}/items/{collection}",
         headers=auth_header,
-        params={"search": name, "per_page": 5},
+        params={"filter[name][_eq]": name, "limit": 1},
     )
-    search_resp.raise_for_status()
-    for term in search_resp.json():
-        if term["name"].lower() == name.lower():
-            return term["id"]
+    resp.raise_for_status()
+    data = resp.json()["data"]
+    if data:
+        return data[0]["id"]
 
     create_resp = await client.post(
-        f"{WP_URL}/wp-json/wp/v2/{taxonomy}",
+        f"{DIRECTUS_URL}/items/{collection}",
         headers={**auth_header, "Content-Type": "application/json"},
-        json={"name": name},
+        json={"name": name, "slug": _slugify(name)},
     )
     create_resp.raise_for_status()
-    return create_resp.json()["id"]
+    return create_resp.json()["data"]["id"]
 
 
-async def post_to_wordpress(image_bytes: bytes, filename: str, title: str, caption: str, meal_type: str, tags: list[str]) -> tuple[str, int]:
-    """Upload image to WP media library, create post with categories and tags, return (post URL, post ID)."""
-    credentials = base64.b64encode(
-        f"{WP_USERNAME}:{WP_APP_PASSWORD}".encode()
-    ).decode()
-    auth_header = {"Authorization": f"Basic {credentials}"}
+async def post_to_directus(
+    image_bytes: bytes, filename: str, title: str, caption: str, meal_type: str, tags: list[str]
+) -> tuple[str, int]:
+    """Upload image to Directus, create post with category and tags, return (post_url, post_id)."""
+    auth_header = {"Authorization": f"Bearer {DIRECTUS_TOKEN}"}
 
-    # Detect content type
     kind = imghdr.what(None, h=image_bytes) or "jpeg"
     content_type = MEDIA_TYPES.get(kind, "image/jpeg")
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=120.0)) as client:
-        # Resolve category and tags to IDs (create if missing)
-        category_id = await get_or_create_wp_term(client, "categories", meal_type, auth_header)
+        # Resolve category and tags (create if missing)
+        category_id = await get_or_create_directus_term(client, "categories", meal_type, auth_header)
         tag_ids = []
         for tag in tags:
-            tag_ids.append(await get_or_create_wp_term(client, "tags", tag, auth_header))
+            tag_ids.append(await get_or_create_directus_term(client, "tags", tag, auth_header))
 
-        # 1. Upload media
-        media_resp = await client.post(
-            f"{WP_URL}/wp-json/wp/v2/media",
-            headers={
-                **auth_header,
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Content-Type": content_type,
-            },
-            content=image_bytes,
+        # Upload image
+        upload_resp = await client.post(
+            f"{DIRECTUS_URL}/files",
+            headers=auth_header,
+            files={"file": (filename, image_bytes, content_type)},
         )
-        media_resp.raise_for_status()
-        media_id = media_resp.json()["id"]
+        upload_resp.raise_for_status()
+        file_id = upload_resp.json()["data"]["id"]
 
-        # 2. Create post
+        # Create post
+        slug = _slugify(title)
+        caption_html = f"<p>{caption}</p>"
         post_resp = await client.post(
-            f"{WP_URL}/wp-json/wp/v2/posts",
+            f"{DIRECTUS_URL}/items/posts",
             headers={**auth_header, "Content-Type": "application/json"},
             json={
+                "status": "published",
+                "published_at": datetime.now(ZoneInfo("UTC")).isoformat(),
                 "title": title,
-                "content": caption,
-                "status": "publish",
-                "featured_media": media_id,
-                "categories": [category_id],
-                "tags": tag_ids,
+                "slug": slug,
+                "excerpt": caption_html,
+                "body": caption_html,
+                "hero_image": file_id,
+                "category": category_id,
+                "tags": [{"tags_id": tid} for tid in tag_ids],
             },
         )
         post_resp.raise_for_status()
-        post_data = post_resp.json()
-        return post_data["link"], post_data["id"]
+        post_data = post_resp.json()["data"]
+        post_id = post_data["id"]
+        # Use slug from response in case Directus modified it
+        actual_slug = post_data.get("slug") or slug
+        post_url = f"{BLOG_URL}/p/{actual_slug}"
+        return post_url, post_id
 
 
-async def update_wordpress_post(post_id: int, **fields) -> dict:
-    """PATCH a WordPress post. Accepts title=, content=, tags=[ids], status=."""
-    credentials = base64.b64encode(
-        f"{WP_USERNAME}:{WP_APP_PASSWORD}".encode()
-    ).decode()
-    auth_header = {"Authorization": f"Basic {credentials}", "Content-Type": "application/json"}
+async def update_directus_post(post_id: int, **fields) -> dict:
+    """PATCH a Directus post. Accepts title=, excerpt=, body=, tags=[names], status=."""
+    auth_header = {"Authorization": f"Bearer {DIRECTUS_TOKEN}"}
+
+    # Tags need special handling: resolve names to IDs, then replace junction records
+    if "tags" in fields:
+        tag_names = fields.pop("tags")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            auth = {"Authorization": f"Bearer {DIRECTUS_TOKEN}"}
+            tag_ids = []
+            for tag in tag_names:
+                tag_ids.append(await get_or_create_directus_term(client, "tags", tag, auth))
+
+            # Delete existing junction records for this post
+            del_resp = await client.delete(
+                f"{DIRECTUS_URL}/items/posts_tags",
+                headers={**auth, "Content-Type": "application/json"},
+                json={"filter": {"posts_id": {"_eq": post_id}}},
+            )
+            # Ignore 404 (no existing tags)
+
+            # Create new junction records
+            for tid in tag_ids:
+                await client.post(
+                    f"{DIRECTUS_URL}/items/posts_tags",
+                    headers={**auth, "Content-Type": "application/json"},
+                    json={"posts_id": post_id, "tags_id": tid},
+                )
+
+    if not fields:
+        return {}
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=60.0)) as client:
         resp = await client.patch(
-            f"{WP_URL}/wp-json/wp/v2/posts/{post_id}",
-            headers=auth_header,
+            f"{DIRECTUS_URL}/items/posts/{post_id}",
+            headers={**auth_header, "Content-Type": "application/json"},
             json=fields,
         )
         resp.raise_for_status()
-        return resp.json()
+        return resp.json()["data"]
 
 
 async def _publish_and_notify(
@@ -341,8 +403,9 @@ async def _publish_and_notify(
     description: str,
     now_stockholm: datetime,
 ) -> None:
-    """Upload to WordPress, run quality checks, and send Telegram confirmation."""
-    post_url, wp_post_id = await post_to_wordpress(image_bytes, filename, title, caption, meal_type, tags)
+    """Upload to Directus, run quality checks, and send Telegram confirmation."""
+    post_url, post_id = await post_to_directus(image_bytes, filename, title, caption, meal_type, tags)
+    slug = post_url.split("/")[-1]
 
     if _quality_checker:
         report = await _quality_checker.check(
@@ -353,9 +416,10 @@ async def _publish_and_notify(
             vision_description=description,
             current_time=now_stockholm,
         )
-        await _quality_checker.store_vision_description(wp_post_id, description)
+        await _quality_checker.store_vision_description(post_id, description)
         await _quality_checker.store_post(
-            wp_post_id=wp_post_id,
+            post_id=post_id,
+            slug=slug,
             title=title,
             caption=caption,
             tags=tags,
@@ -478,7 +542,6 @@ async def _handle_telegram_command(chat_id: int, text: str) -> None:
         return
 
     import json as _json
-    import re as _re
 
     args = parts[1].strip() if len(parts) > 1 else ""
 
@@ -488,7 +551,8 @@ async def _handle_telegram_command(chat_id: int, text: str) -> None:
             return
         tags = _json.loads(last["tags"]) if last["tags"] else []
         tags_str = ", ".join(tags) if tags else "(inga)"
-        post_url = f"{WP_URL}/?p={last['wp_post_id']}"
+        slug = last.get("slug") or ""
+        post_url = f"{BLOG_URL}/p/{slug}" if slug else f"{BLOG_URL}"
         msg = (
             f"Senaste inlägg: \"{last['title']}\"\n"
             f"Bildtext: {last['caption']}\n"
@@ -498,41 +562,36 @@ async def _handle_telegram_command(chat_id: int, text: str) -> None:
         await send_telegram_message(chat_id, msg)
         return
 
-    wp_post_id = last["wp_post_id"]
+    post_id = last["wp_post_id"]
 
     if command == "/title":
         if not args:
             await send_telegram_message(chat_id, "Ange ny titel: /title Ny titel")
             return
-        await update_wordpress_post(wp_post_id, title=args)
+        await update_directus_post(post_id, title=args)
         await _quality_checker.update_last_post(title=args)
         await send_telegram_message(chat_id, "✓ Titel uppdaterad.")
 
     elif command == "/caption":
         if not args:
-            await send_telegram_message(chat_id, "Ange ny rubrik: /caption Ny rubrik")
+            await send_telegram_message(chat_id, "Ange ny bildtext: /caption Ny bildtext")
             return
-        await update_wordpress_post(wp_post_id, title=args)
+        caption_html = f"<p>{args}</p>"
+        await update_directus_post(post_id, excerpt=caption_html, body=caption_html)
         await _quality_checker.update_last_post(caption=args)
-        await send_telegram_message(chat_id, "✓ Rubrik uppdaterad.")
+        await send_telegram_message(chat_id, "✓ Bildtext uppdaterad.")
 
     elif command == "/tags":
         if not args:
             await send_telegram_message(chat_id, "Ange taggar: /tags havregröt, blåbär")
             return
         new_tags = [t.strip() for t in args.split(",") if t.strip()]
-        credentials = base64.b64encode(f"{WP_USERNAME}:{WP_APP_PASSWORD}".encode()).decode()
-        auth_header = {"Authorization": f"Basic {credentials}"}
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            tag_ids = []
-            for tag in new_tags:
-                tag_ids.append(await get_or_create_wp_term(client, "tags", tag, auth_header))
-        await update_wordpress_post(wp_post_id, tags=tag_ids)
+        await update_directus_post(post_id, tags=new_tags)
         await _quality_checker.update_last_post(tags=_json.dumps(new_tags))
         await send_telegram_message(chat_id, f"✓ Taggar uppdaterade: {', '.join(new_tags)}")
 
     elif command == "/delete":
-        await update_wordpress_post(wp_post_id, status="draft")
+        await update_directus_post(post_id, status="draft")
         await send_telegram_message(chat_id, "✓ Inlägg avpublicerat (draft).")
 
     else:
@@ -581,7 +640,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
 
 
 async def _run_vision_backfill() -> None:
-    """Fetch all WP posts, run those missing real vision descriptions through the vision model."""
+    """Fetch all Directus posts, run those missing real vision descriptions through the vision model."""
     import aiosqlite
     from datetime import timezone
 
@@ -607,53 +666,52 @@ async def _run_vision_backfill() -> None:
 
     print(f"[backfill] {len(post_ids)} posts to process.")
 
-    credentials = base64.b64encode(f"{WP_USERNAME}:{WP_APP_PASSWORD}".encode()).decode()
-    auth_header = {"Authorization": f"Basic {credentials}"}
+    auth_header = {"Authorization": f"Bearer {DIRECTUS_TOKEN}"}
 
-    # Fetch featured media URLs for all posts in one paginated call using _embed
+    # Fetch hero image URLs for all posts
     async with httpx.AsyncClient(timeout=60.0) as client:
         media_url: dict[int, str] = {}
         page = 1
         while True:
             resp = await client.get(
-                f"{WP_URL}/wp-json/wp/v2/posts",
+                f"{DIRECTUS_URL}/items/posts",
                 headers=auth_header,
-                params={"per_page": 100, "page": page, "_embed": "wp:featuredmedia", "_fields": "id,featured_media,_links,_embedded"},
+                params={
+                    "fields": "id,hero_image",
+                    "filter[id][_in]": ",".join(str(pid) for pid in post_ids),
+                    "limit": 100,
+                    "page": page,
+                },
             )
             if resp.status_code == 400:
                 break
             resp.raise_for_status()
-            batch = resp.json()
+            batch = resp.json()["data"]
             if not batch:
                 break
             for post in batch:
                 pid = post["id"]
-                if pid not in post_ids:
-                    continue
-                embedded = post.get("_embedded", {})
-                featured = embedded.get("wp:featuredmedia", [])
-                if featured and featured[0].get("source_url"):
-                    media_url[pid] = featured[0]["source_url"]
-            total_pages = int(resp.headers.get("X-WP-TotalPages", 1))
-            if page >= total_pages:
+                file_id = post.get("hero_image")
+                if file_id:
+                    media_url[pid] = f"{DIRECTUS_URL}/assets/{file_id}"
+            if len(batch) < 100:
                 break
             page += 1
 
-    print(f"[backfill] Found featured images for {len(media_url)}/{len(post_ids)} posts.")
+    print(f"[backfill] Found hero images for {len(media_url)}/{len(post_ids)} posts.")
 
     processed = skipped = errors = 0
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=300.0)) as client:
-        for wp_post_id in post_ids:
-            url = media_url.get(wp_post_id)
+        for post_id in post_ids:
+            url = media_url.get(post_id)
             if not url:
                 skipped += 1
                 continue
             try:
-                img_resp = await client.get(url)
+                img_resp = await client.get(url, headers=auth_header)
                 img_resp.raise_for_status()
                 img_b64 = base64.b64encode(img_resp.content).decode()
 
-                # Retry up to 3 times with backoff on 5xx errors
                 description = None
                 for attempt in range(3):
                     try:
@@ -674,7 +732,7 @@ async def _run_vision_backfill() -> None:
                     except (httpx.HTTPStatusError, httpx.RemoteProtocolError) as e:
                         if attempt < 2:
                             wait = 10 * (attempt + 1)
-                            print(f"[backfill] Post {wp_post_id} attempt {attempt+1} failed ({e}), retrying in {wait}s...")
+                            print(f"[backfill] Post {post_id} attempt {attempt+1} failed ({e}), retrying in {wait}s...")
                             await asyncio.sleep(wait)
                         else:
                             raise
@@ -685,12 +743,12 @@ async def _run_vision_backfill() -> None:
                 async with aiosqlite.connect(db_path) as db:
                     await db.execute(
                         "INSERT OR REPLACE INTO vision_descriptions (wp_post_id, description, stored_at) VALUES (?, ?, ?)",
-                        (wp_post_id, description, datetime.now(timezone.utc).isoformat()),
+                        (post_id, description, datetime.now(timezone.utc).isoformat()),
                     )
                     await db.commit()
 
                 processed += 1
-                print(f"[backfill] {processed}/{len(post_ids) - skipped} done (post {wp_post_id})")
+                print(f"[backfill] {processed}/{len(post_ids) - skipped} done (post {post_id})")
 
                 # Wait until vision server is ready before next request
                 vision_base = VISION_BASE_URL.replace("/v1", "")
@@ -705,22 +763,22 @@ async def _run_vision_backfill() -> None:
 
             except Exception as e:
                 errors += 1
-                print(f"[backfill] Error on post {wp_post_id}: {e}")
+                print(f"[backfill] Error on post {post_id}: {e}")
 
     print(f"[backfill] Complete — processed: {processed}, skipped (no image): {skipped}, errors: {errors}")
 
 
 @app.post("/admin/backfill-vision", dependencies=[Depends(require_auth)])
 async def backfill_vision(background_tasks: BackgroundTasks):
-    """Run all WP posts without real vision descriptions through the vision model."""
+    """Run all posts without real vision descriptions through the vision model."""
     background_tasks.add_task(_run_vision_backfill)
     return {"status": "started", "message": "Backfill running in background — check docker logs for progress."}
 
 
 @app.post("/admin/reindex", dependencies=[Depends(require_auth)])
 async def reindex():
-    """Bootstrap or refresh the quality checker index from WordPress."""
+    """Bootstrap or refresh the quality checker index from Directus."""
     if not _quality_checker:
-        raise HTTPException(status_code=503, detail="Quality checker not configured (missing WP credentials)")
-    count = await _quality_checker.bootstrap_from_wp()
+        raise HTTPException(status_code=503, detail="Quality checker not configured (missing Directus credentials)")
+    count = await _quality_checker.bootstrap_from_directus()
     return {"indexed": count}

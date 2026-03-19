@@ -145,6 +145,7 @@ CREATE TABLE IF NOT EXISTS vision_descriptions (
 CREATE TABLE IF NOT EXISTS last_post (
     id          INTEGER PRIMARY KEY CHECK (id = 1),
     wp_post_id  INTEGER,
+    slug        TEXT,
     title       TEXT,
     caption     TEXT,
     tags        TEXT,
@@ -192,11 +193,16 @@ def _synthetic_description(tags: list[str], meal_type: str) -> str:
     return (". ".join(parts) + ".") if parts else "Okänd maträtt."
 
 
-def _parse_wp_date(date_gmt: str) -> datetime:
-    """Parse WP date_gmt string to UTC datetime."""
-    # WP returns "2026-01-15T08:30:00" (no timezone) for _gmt fields
-    dt = datetime.fromisoformat(date_gmt.rstrip("Z").replace("Z", ""))
-    return dt.replace(tzinfo=timezone.utc)
+def _parse_date(date_str: str) -> datetime:
+    """Parse an ISO 8601 date string (with or without Z/offset) to UTC datetime."""
+    s = date_str.replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        dt = datetime.fromisoformat(s.split(".")[0])
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -207,24 +213,15 @@ class QualityChecker:
     def __init__(
         self,
         *,
-        wp_url: str,
-        wp_username: str,
-        wp_app_password: str,
+        directus_url: str,
+        directus_token: str,
         db_path: str = "/app/data/quality.db",
         index_ttl_seconds: int = 3600,
     ):
-        self._wp_url = wp_url.rstrip("/")
-        self._wp_username = wp_username
-        self._wp_app_password = wp_app_password
+        self._directus_url = directus_url.rstrip("/")
+        self._auth_header = {"Authorization": f"Bearer {directus_token}"}
         self._db_path = db_path
         self._ttl = index_ttl_seconds
-
-        import base64
-        self._auth_header = {
-            "Authorization": "Basic " + base64.b64encode(
-                f"{wp_username}:{wp_app_password}".encode()
-            ).decode()
-        }
 
         # In-memory index
         self._index: list[PostIndex] = []
@@ -238,118 +235,92 @@ class QualityChecker:
     async def ensure_db(self) -> None:
         async with aiosqlite.connect(self._db_path) as db:
             await db.executescript(SCHEMA_SQL)
-            await db.commit()
+            # Migrate: add slug column if it doesn't exist yet
+            try:
+                await db.execute("ALTER TABLE last_post ADD COLUMN slug TEXT")
+                await db.commit()
+            except Exception:
+                pass  # column already exists
 
     # ------------------------------------------------------------------
-    # WordPress fetching
+    # Directus fetching
     # ------------------------------------------------------------------
 
-    async def _fetch_wp_posts(
+    async def _fetch_directus_posts(
         self, client: httpx.AsyncClient, *, after: Optional[str] = None
     ) -> list[dict]:
-        """Fetch all posts from WP REST API (handles pagination)."""
+        """Fetch all posts from Directus (handles pagination)."""
         posts = []
         page = 1
+        params: dict = {
+            "fields": "id,title,body,tags.tags_id.name,category.name,published_at",
+            "limit": 100,
+            "sort": "published_at",
+        }
+        if after:
+            params["filter[published_at][_gt]"] = after
+
         while True:
-            params: dict = {"per_page": 100, "page": page, "orderby": "date", "order": "asc", "_fields": "id,title,content,tags,categories,date_gmt,class_list"}
-            if after:
-                params["after"] = after
+            params["page"] = page
             resp = await client.get(
-                f"{self._wp_url}/wp-json/wp/v2/posts",
+                f"{self._directus_url}/items/posts",
                 headers=self._auth_header,
                 params=params,
                 timeout=30.0,
             )
-            if resp.status_code == 400:
-                break  # no more pages
             resp.raise_for_status()
-            batch = resp.json()
+            batch = resp.json()["data"]
             if not batch:
                 break
             posts.extend(batch)
-            total_pages = int(resp.headers.get("X-WP-TotalPages", 1))
-            if page >= total_pages:
+            if len(batch) < 100:
                 break
             page += 1
         return posts
-
-    async def _fetch_tag_names(self, client: httpx.AsyncClient, tag_ids: list[int]) -> list[str]:
-        """Resolve tag IDs to lowercase names."""
-        if not tag_ids:
-            return []
-        names = []
-        for tag_id in tag_ids:
-            resp = await client.get(
-                f"{self._wp_url}/wp-json/wp/v2/tags/{tag_id}",
-                headers=self._auth_header,
-                timeout=10.0,
-            )
-            if resp.status_code == 200:
-                names.append(resp.json().get("name", "").lower())
-        return names
-
-    async def _fetch_all_tags_bulk(self, client: httpx.AsyncClient) -> dict[int, str]:
-        """Fetch all tags at once and return id→name mapping."""
-        tags: dict[int, str] = {}
-        page = 1
-        while True:
-            resp = await client.get(
-                f"{self._wp_url}/wp-json/wp/v2/tags",
-                headers=self._auth_header,
-                params={"per_page": 100, "page": page, "_fields": "id,name"},
-                timeout=30.0,
-            )
-            if resp.status_code == 400:
-                break
-            resp.raise_for_status()
-            batch = resp.json()
-            if not batch:
-                break
-            for t in batch:
-                tags[t["id"]] = t["name"].lower()
-            total_pages = int(resp.headers.get("X-WP-TotalPages", 1))
-            if page >= total_pages:
-                break
-            page += 1
-        return tags
 
     # ------------------------------------------------------------------
     # Bootstrap & refresh
     # ------------------------------------------------------------------
 
-    async def bootstrap_from_wp(self) -> int:
-        """Full index from WP REST API. Returns count of indexed posts."""
+    async def bootstrap_from_directus(self) -> int:
+        """Full index from Directus. Returns count of indexed posts."""
         async with httpx.AsyncClient(timeout=60.0) as client:
-            # Fetch all tags first (bulk, efficient)
-            tag_map = await self._fetch_all_tags_bulk(client)
-
-            posts = await self._fetch_wp_posts(client)
+            posts = await self._fetch_directus_posts(client)
 
         async with aiosqlite.connect(self._db_path) as db:
             count = 0
             for post in posts:
-                wp_id = post["id"]
-                title = post["title"]["rendered"]
-                caption_text = _strip_html(post["content"]["rendered"])
-                tag_ids: list[int] = post.get("tags", [])
-                tag_names = [tag_map.get(tid, "") for tid in tag_ids if tid in tag_map]
-                meal_type = ""  # WP categories require separate lookup; omit for bootstrap
-                published_at = post.get("date_gmt", "")
+                post_id = post["id"]
+                title = post["title"] or ""
+                caption_text = _strip_html(post.get("body") or "")
 
+                # Tags come back as [{"tags_id": {"name": "havregröt"}}, ...]
+                raw_tags = post.get("tags") or []
+                tag_names = [
+                    t["tags_id"]["name"].lower()
+                    for t in raw_tags
+                    if isinstance(t, dict) and t.get("tags_id")
+                ]
+
+                # Category may be expanded as dict or just an ID
+                cat = post.get("category")
+                meal_type = cat["name"] if isinstance(cat, dict) else ""
+
+                published_at = post.get("published_at") or ""
                 tags_json = json.dumps(tag_names)
+
                 await db.execute(
                     """INSERT OR REPLACE INTO post_cache
                        (wp_post_id, title, caption_text, tags, meal_type, published_at)
                        VALUES (?, ?, ?, ?, ?, ?)""",
-                    (wp_id, title, caption_text, tags_json, meal_type, published_at),
+                    (post_id, title, caption_text, tags_json, meal_type, published_at),
                 )
 
-                # Synthetic vision description for historical posts
                 synth = _synthetic_description(tag_names, meal_type)
                 await db.execute(
                     """INSERT OR IGNORE INTO vision_descriptions (wp_post_id, description, stored_at)
                        VALUES (?, ?, ?)""",
-                    (wp_id, synth, datetime.now(timezone.utc).isoformat()),
+                    (post_id, synth, datetime.now(timezone.utc).isoformat()),
                 )
                 count += 1
 
@@ -359,38 +330,43 @@ class QualityChecker:
         return count
 
     async def refresh_index(self, *, force: bool = False) -> None:
-        """Load SQLite → memory; optionally sync new posts from WP first."""
+        """Load SQLite → memory; optionally sync new posts from Directus first."""
         async with self._lock:
             now = datetime.now(timezone.utc)
-            needs_wp_sync = force or (
+            needs_sync = force or (
                 self._last_refresh is None
                 or (now - self._last_refresh).total_seconds() > self._ttl
             )
 
-            if needs_wp_sync and self._index:
+            if needs_sync and self._index:
                 # Incremental: only fetch posts newer than our newest
                 newest = max(p.published_at for p in self._index)
                 after_str = newest.isoformat().replace("+00:00", "Z")
 
                 async with httpx.AsyncClient(timeout=60.0) as client:
-                    tag_map = await self._fetch_all_tags_bulk(client)
-                    new_posts = await self._fetch_wp_posts(client, after=after_str)
+                    new_posts = await self._fetch_directus_posts(client, after=after_str)
 
                 if new_posts:
                     async with aiosqlite.connect(self._db_path) as db:
                         for post in new_posts:
-                            wp_id = post["id"]
-                            title = post["title"]["rendered"]
-                            caption_text = _strip_html(post["content"]["rendered"])
-                            tag_ids = post.get("tags", [])
-                            tag_names = [tag_map.get(tid, "") for tid in tag_ids if tid in tag_map]
-                            published_at = post.get("date_gmt", "")
+                            post_id = post["id"]
+                            title = post["title"] or ""
+                            caption_text = _strip_html(post.get("body") or "")
+                            raw_tags = post.get("tags") or []
+                            tag_names = [
+                                t["tags_id"]["name"].lower()
+                                for t in raw_tags
+                                if isinstance(t, dict) and t.get("tags_id")
+                            ]
+                            cat = post.get("category")
+                            meal_type = cat["name"] if isinstance(cat, dict) else ""
+                            published_at = post.get("published_at") or ""
                             tags_json = json.dumps(tag_names)
                             await db.execute(
                                 """INSERT OR REPLACE INTO post_cache
                                    (wp_post_id, title, caption_text, tags, meal_type, published_at)
                                    VALUES (?, ?, ?, ?, ?, ?)""",
-                                (wp_id, title, caption_text, tags_json, "", published_at),
+                                (post_id, title, caption_text, tags_json, meal_type, published_at),
                             )
                         await db.commit()
 
@@ -403,7 +379,7 @@ class QualityChecker:
                 ) as cursor:
                     async for row in cursor:
                         try:
-                            pub = _parse_wp_date(row["published_at"]) if row["published_at"] else datetime.now(timezone.utc)
+                            pub = _parse_date(row["published_at"]) if row["published_at"] else datetime.now(timezone.utc)
                         except (ValueError, KeyError):
                             pub = datetime.now(timezone.utc)
                         tags = json.loads(row["tags"]) if row["tags"] else []
@@ -424,18 +400,19 @@ class QualityChecker:
     # Store helpers
     # ------------------------------------------------------------------
 
-    async def store_vision_description(self, wp_post_id: int, description: str) -> None:
+    async def store_vision_description(self, post_id: int, description: str) -> None:
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
                 """INSERT OR REPLACE INTO vision_descriptions (wp_post_id, description, stored_at)
                    VALUES (?, ?, ?)""",
-                (wp_post_id, description, datetime.now(timezone.utc).isoformat()),
+                (post_id, description, datetime.now(timezone.utc).isoformat()),
             )
             await db.commit()
 
     async def store_post(
         self,
-        wp_post_id: int,
+        post_id: int,
+        slug: str,
         title: str,
         caption: str,
         tags: list[str],
@@ -452,23 +429,23 @@ class QualityChecker:
                 """INSERT OR REPLACE INTO post_cache
                    (wp_post_id, title, caption_text, tags, meal_type, published_at)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (wp_post_id, title, caption_text, tags_json, meal_type, pub_iso),
+                (post_id, title, caption_text, tags_json, meal_type, pub_iso),
             )
             await db.execute(
-                """INSERT OR REPLACE INTO last_post (id, wp_post_id, title, caption, tags, meal_type, posted_at)
-                   VALUES (1, ?, ?, ?, ?, ?, ?)""",
-                (wp_post_id, title, caption, tags_json, meal_type, pub_iso),
+                """INSERT OR REPLACE INTO last_post (id, wp_post_id, slug, title, caption, tags, meal_type, posted_at)
+                   VALUES (1, ?, ?, ?, ?, ?, ?, ?)""",
+                (post_id, slug, title, caption, tags_json, meal_type, pub_iso),
             )
             await db.commit()
 
         # Update in-memory index
         async with self._lock:
             try:
-                pub = _parse_wp_date(pub_iso.rstrip("Z"))
+                pub = _parse_date(pub_iso)
             except ValueError:
                 pub = published_at.astimezone(timezone.utc)
             self._index.append(PostIndex(
-                wp_post_id=wp_post_id,
+                wp_post_id=post_id,
                 title=title,
                 caption=caption_text,
                 tags=tags,

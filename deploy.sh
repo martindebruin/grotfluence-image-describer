@@ -10,6 +10,7 @@ rsync -av --delete \
   --exclude='__pycache__/' \
   --exclude='*.pyc' \
   --exclude='deploy.sh' \
+  --exclude='data/' \
   ./ "${REMOTE_HOST}:${REMOTE_DIR}/"
 
 echo "→ Rebuilding and restarting container..."
