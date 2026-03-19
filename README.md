@@ -2,16 +2,16 @@
 
 Automatic photo-to-blog pipeline for [grötfluence.se](https://grötfluence.se).
 
-Send a photo to a Telegram bot → AI describes it → text model writes a sarcastic Swedish caption → published to Directus CMS.
+Send a photo to a Telegram bot → vision model describes it → text model writes a sarcastic Swedish caption → published to Directus CMS.
 
 ## Pipeline
 
 ```
 Telegram photo
     ↓
-qwen2.5vl:3b-gpu (frmwrk-ai, llama-vision-proxy:8082)  →  English visual description
+Vision model (OpenAI-compatible)  →  English visual description
     ↓
-text model (mistral-small:24b or Claude)  →  Swedish title + caption + meal category + ingredient tags
+Text model (OpenAI-compatible or Anthropic)  →  Swedish title + caption + meal category + ingredient tags
     ↓
 Quality threshold: >1 unseen ingredient? → pause, ask /confirm or /cancel via Telegram
     ↓
@@ -25,14 +25,12 @@ Telegram reply with post URL (+ quality warnings if any)
 ### Requirements
 
 - Docker + Docker Compose
-- Vision model endpoint (OpenAI-compatible)
-- Text model endpoint (OpenAI-compatible) or Anthropic API key
+- OpenAI-compatible vision model endpoint
+- OpenAI-compatible text model endpoint, or an Anthropic API key
 - Telegram bot token (from [@BotFather](https://t.me/BotFather))
 - Directus instance with a static API token
 
 ### Environment variables
-
-Copy `.env.example` to `.env` and fill in:
 
 ```
 WEB_PASSWORD=                # password for the web UI (username defaults to "martin")
@@ -41,27 +39,27 @@ TELEGRAM_WEBHOOK_SECRET=     # random string — set when registering the webhoo
 TELEGRAM_ALLOWED_USER_ID=    # numeric Telegram user ID — get from @userinfobot
 DIRECTUS_URL=                # e.g. https://cms.example.com
 DIRECTUS_TOKEN=              # Directus static API token
-BLOG_URL=                    # public blog URL, e.g. https://example.com (post URLs: /p/{slug})
+BLOG_URL=                    # public blog URL, e.g. https://example.com (posts at /p/{slug})
 ```
 
 Optional overrides:
 
 ```
-VISION_BASE_URL=http://frmwrk-ai:8082/v1   # OpenAI-compatible vision endpoint
-VISION_MODEL=qwen2.5vl:3b-gpu
-TEXT_PROVIDER=openai                        # "openai" (local via TEXT_BASE_URL) or "anthropic"
-TEXT_BASE_URL=http://frmwrk-ai:8080/v1     # used when TEXT_PROVIDER=openai
-TEXT_MODEL=mistral-small:24b
-ANTHROPIC_API_KEY=                          # required when TEXT_PROVIDER=anthropic
+VISION_BASE_URL=             # OpenAI-compatible vision endpoint (default: http://frmwrk-ai:8082/v1)
+VISION_MODEL=                # vision model name (default: qwen2.5vl:3b-gpu)
+TEXT_PROVIDER=openai         # "openai" (default) or "anthropic"
+TEXT_BASE_URL=               # OpenAI-compatible text endpoint (default: http://frmwrk-ai:8080/v1)
+TEXT_MODEL=                  # text model name (default: mistral-small:24b)
+ANTHROPIC_API_KEY=           # required when TEXT_PROVIDER=anthropic
 ```
 
 ### Directus requirements
 
-Collections required: `posts`, `categories`, `tags`, `posts_tags` (M2M junction).
+Collections: `posts`, `categories`, `tags`, `posts_tags` (M2M junction).
 
-`posts` fields: `id`, `status`, `published_at`, `title`, `slug`, `excerpt`, `body`, `hero_image` (uuid FK to directus_files), `category` (int FK), `tags` (M2M via posts_tags).
+`posts` fields: `id`, `status`, `published_at`, `title`, `slug`, `excerpt`, `body`, `hero_image` (uuid), `category` (int FK), `tags` (M2M via posts_tags).
 
-Categories and tags are created automatically if they don't exist. The `posts → posts_tags` relation should have `one_deselect_action: delete` so that deleting a post cascades to its junction rows.
+Categories and tags are created automatically if they don't exist. Set `one_deselect_action: delete` on the `posts → posts_tags` relation so deleting a post cascades to its junction rows.
 
 ### Run
 
@@ -77,7 +75,7 @@ App listens on port 4545.
 curl "https://api.telegram.org/bot{TOKEN}/setWebhook?url=https://your-domain.com/telegram/webhook&secret_token={WEBHOOK_SECRET}"
 ```
 
-### Deploy to a server
+### Deploy
 
 ```bash
 bash deploy.sh
@@ -85,27 +83,26 @@ bash deploy.sh
 
 ## Telegram usage
 
-- Send a photo — pipeline runs automatically
-- Optionally add a caption to the photo for ingredient hints (e.g. "med banan")
-- Meal category (frukost/lunch/fika/middag/kvällsgröt) is inferred from current Stockholm time
-- Tags default to `havregröt`; blue tones → `blåbär`, red tones → `lingon`
-- If >1 unseen ingredient is detected, the post is held and you are asked to `/confirm` or `/cancel`
+- Send a photo — the pipeline runs automatically
+- Optionally add a caption to the photo as an ingredient hint (e.g. "med banan")
+- Meal category (frukost/lunch/fika/middag/kvällsgröt) is inferred from Stockholm time
+- If >1 previously unseen ingredient tag is detected, the post is held pending `/confirm`
 
 ## Telegram bot commands
 
 | Command | Description |
 |---------|-------------|
-| `/confirm` | Publish a held post (triggered by unseen ingredient check) |
+| `/confirm` | Publish a held post |
 | `/cancel` | Discard a held post |
 | `/status` | Show the last published post |
 | `/title New title` | Update the title of the last post |
-| `/caption New text` | Update the excerpt and body of the last post |
-| `/tags tag1, tag2` | Update the tags of the last post |
-| `/delete` | Unpublish the last post (sets status to draft) |
+| `/caption New text` | Update the caption of the last post |
+| `/tags tag1, tag2` | Replace the tags of the last post |
+| `/delete` | Unpublish the last post (sets to draft) |
 
 ## Web UI
 
-The app also exposes a simple web UI at `/` for manual caption generation, protected by HTTP Basic Auth.
+A simple web UI at `/` for manual caption generation, protected by HTTP Basic Auth.
 
 ## Admin endpoints
 
@@ -113,17 +110,18 @@ All require HTTP Basic Auth.
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /admin/reindex` | Refresh the quality checker index from Directus |
-| `POST /admin/backfill-vision` | Run all posts missing vision descriptions through the vision model (idempotent, background) |
+| `POST /admin/reindex` | Rebuild the quality checker index from Directus |
+| `POST /admin/backfill-vision` | Run posts missing vision descriptions through the vision model (background, idempotent) |
 
 ## Quality checker
 
-After each publish, `quality.py` checks for:
-- Banned phrases (hardcoded list of overused expressions)
-- English word leakage in title/caption/tags
-- Previously unseen ingredient tags (>1 new = hold for confirmation)
-- Caption similarity to recent posts (Jaccard similarity)
-- Vision-tag coherence (does the description support the tags?)
-- Meal type plausibility (is the time right for frukost/lunch/etc?)
+After each publish, `quality.py` runs a set of checks and appends any warnings to the Telegram reply:
 
-Warnings are appended to the Telegram confirmation message. The quality index is seeded from Directus on startup and refreshed hourly.
+- **Banned phrases** — hardcoded list of overused expressions
+- **English leakage** — English words in title, caption, or tags
+- **Tag novelty** — flags previously unseen ingredient tags (>1 new triggers a hold)
+- **Caption similarity** — Jaccard similarity against the 30 most recent posts
+- **Vision-tag coherence** — checks that tags are supported by the vision description
+- **Meal type plausibility** — validates the meal type against the current Stockholm time
+
+The index is loaded from a local SQLite database (`/app/data/quality.db`), seeded from Directus on startup and refreshed hourly.
