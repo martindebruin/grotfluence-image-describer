@@ -87,10 +87,8 @@ POST_SYSTEM_PROMPT = (
     "Regler för meal_type baserat på tid:\n"
     "  frukost: 05-10, lunch: 10-14, fika: 14-16, middag: 16-21, kvällsgröt: 21-05\n\n"
     "Regler för tags:\n"
-    "  - Inkludera alltid 'havregröt' om inte användarens notat anger något annat.\n"
-    "  - Lägg till 'blåbär' om bilden innehåller blå/lila färger.\n"
-    "  - Lägg till 'lingon' om bilden innehåller röda bär.\n"
-    "  - Lägg till andra relevanta ingredienser om de är tydliga i bilden eller notatet.\n"
+    "  - Använd ingredienserna och grötsorten som nämns i bildbeskrivningen som taggar.\n"
+    "  - Inkludera alltid grötsorten (t.ex. 'havregröt') som en tagg.\n"
     "  - Max 4 taggar."
 )
 
@@ -162,7 +160,7 @@ async def describe(file: UploadFile = File(...), _: None = Depends(require_auth)
                     "model": VISION_MODEL,
                     "stream": False,
                     "messages": [{"role": "user", "content": [
-                        {"type": "text", "text": "Describe what you see in this image. Focus on the food: appearance, colors, toppings, texture, presentation. Be objective and specific."},
+                        {"type": "text", "text": "Analysera bilden och beskriv exakt vilken grötsort och vilka toppings/tillbehör som syns."},
                         {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
                     ]}],
                 },
@@ -453,7 +451,7 @@ async def _process_telegram_photo(chat_id: int, file_id: str, filename: str, tel
                     "model": VISION_MODEL,
                     "stream": False,
                     "messages": [{"role": "user", "content": [
-                        {"type": "text", "text": "Describe what you see in this image. Focus on the food: appearance, colors, toppings, texture, presentation. Be objective and specific."},
+                        {"type": "text", "text": "Analysera bilden och beskriv exakt vilken grötsort och vilka toppings/tillbehör som syns."},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
                     ]}],
                 },
@@ -721,7 +719,7 @@ async def _run_vision_backfill() -> None:
                                 "model": VISION_MODEL,
                                 "stream": False,
                                 "messages": [{"role": "user", "content": [
-                                    {"type": "text", "text": "Describe what you see in this image. Focus on the food: appearance, colors, toppings, texture, presentation. Be objective and specific."},
+                                    {"type": "text", "text": "Analysera bilden och beskriv exakt vilken grötsort och vilka toppings/tillbehör som syns."},
                                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
                                 ]}],
                             },

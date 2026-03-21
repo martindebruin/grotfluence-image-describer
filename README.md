@@ -9,7 +9,7 @@ Send a photo to a Telegram bot → vision model describes it → text model writ
 ```
 Telegram photo
     ↓
-Vision model (OpenAI-compatible)  →  English visual description
+Vision model (fine-tuned Qwen2.5-VL-3B)  →  Swedish porridge description ("Detta är havregröt med lingon och banan.")
     ↓
 Text model (OpenAI-compatible or Anthropic)  →  Swedish title + caption + meal category + ingredient tags
     ↓
@@ -52,6 +52,14 @@ TEXT_BASE_URL=               # OpenAI-compatible text endpoint (default: http://
 TEXT_MODEL=                  # text model name (default: mistral-small:24b)
 ANTHROPIC_API_KEY=           # required when TEXT_PROVIDER=anthropic
 ```
+
+## Vision model
+
+The vision step uses a **fine-tuned Qwen2.5-VL-3B-Instruct** model (LoRA, trained on 550+ real porridge photos). It outputs Swedish ingredient descriptions directly — `"Detta är havregröt med lingon och banan."` — rather than generic English descriptions. This feeds the text model more accurate ingredient names with no color-guessing heuristics.
+
+The fine-tuned model is served by `llama-server-vision` on `frmwrk-ai:8081`. Requests go through `llama-vision-proxy` on `:8082` which converts WebP/BMP/etc to JPEG before forwarding.
+
+Training pipeline is at `/home/martin/claude/training/` on `frmwrk-ai`. A cron job runs every Sunday at 03:00 and retrains automatically when ≥50 new posts have been published since the last training run (scrapes from Directus, augments 10×, fine-tunes ~3.5h).
 
 ### Directus requirements
 
