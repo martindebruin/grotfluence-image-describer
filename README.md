@@ -38,7 +38,7 @@ TELEGRAM_BOT_TOKEN=
 TELEGRAM_WEBHOOK_SECRET=     # random string — set when registering the webhook
 TELEGRAM_ALLOWED_USER_ID=    # numeric Telegram user ID — get from @userinfobot
 DIRECTUS_URL=                # e.g. https://cms.example.com
-DIRECTUS_TOKEN=              # Directus static API token
+DIRECTUS_TOKEN=              # Directus API token
 BLOG_URL=                    # public blog URL, e.g. https://example.com (posts at /p/{slug})
 ```
 
