@@ -4,31 +4,52 @@ Automatic photo-to-blog pipeline for [grötfluence.se](https://grötfluence.se).
 
 Send a photo to a Telegram bot → vision model describes it → text model writes a sarcastic Swedish caption → published to Directus CMS.
 
-## Pipeline
+Community posts from Mastodon and Bluesky are monitored in parallel — verified porridge photos are saved and rewarded with a $GRÖT airdrop.
+
+## Pipelines
+
+### Telegram (personal)
 
 ```
 Telegram photo
     ↓
-Vision model (fine-tuned Qwen2.5-VL-3B)  →  Swedish porridge description ("Detta är havregröt med lingon och banan.")
+Vision model (fine-tuned Qwen2.5-VL-3B)  →  Swedish porridge description
     ↓
-Text model (OpenAI-compatible or Anthropic)  →  Swedish title + caption + meal category + ingredient tags
+Text model  →  Swedish title + caption + meal category + ingredient tags
     ↓
-Quality threshold: >1 unseen ingredient? → pause, ask /confirm or /cancel via Telegram
+Quality threshold: >1 unseen ingredient? → pause, ask /confirm or /cancel
     ↓
 Directus REST API  →  published post with hero image, category, tags
     ↓
 Telegram reply with post URL (+ quality warnings if any)
 ```
 
+### Community (Mastodon + Bluesky)
+
+```
+Mention @oat_tracker with a photo
+    ↓
+Vision sanity check (fine-tuned model) — "gröt" in description?
+    ↓ yes                              ↓ no
+Saved to community.db          Reply: "Det där såg tyvärr inte ut som gröt."
+    ↓
+Airdrop 25 $GRÖT to registered wallet (if wallet registered)
+```
+
+**Wallet registration:** mention or DM `@oat_tracker` with your Solana wallet address (no image). Reply confirms registration.
+
 ## Setup
 
 ### Requirements
 
 - Docker + Docker Compose
-- OpenAI-compatible vision model endpoint
+- OpenAI-compatible vision model endpoint (fine-tuned Qwen2.5-VL-3B recommended)
 - OpenAI-compatible text model endpoint, or an Anthropic API key
 - Telegram bot token (from [@BotFather](https://t.me/BotFather))
 - Directus instance with a static API token
+- Mastodon bot account + access token
+- Bluesky bot account + app password
+- grot-social airdrop microservice (see below)
 
 ### Environment variables
 
@@ -40,6 +61,19 @@ TELEGRAM_ALLOWED_USER_ID=    # numeric Telegram user ID — get from @userinfobo
 DIRECTUS_URL=                # e.g. https://cms.example.com
 DIRECTUS_TOKEN=              # Directus API token
 BLOG_URL=                    # public blog URL, e.g. https://example.com (posts at /p/{slug})
+
+# Mastodon community listener
+MASTODON_INSTANCE=https://mastodon.social
+MASTODON_ACCESS_TOKEN=
+
+# Bluesky community listener
+BSKY_HANDLE=                 # e.g. oat-tracker.bsky.social
+BSKY_APP_PASSWORD=
+
+# $GRÖT airdrop microservice
+AIRDROP_URL=                 # e.g. http://100.98.25.111:8765
+AIRDROP_SECRET=              # shared secret (x-secret header)
+AIRDROP_AMOUNT=25
 ```
 
 Optional overrides:
@@ -51,15 +85,29 @@ TEXT_PROVIDER=openai         # "openai" (default) or "anthropic"
 TEXT_BASE_URL=               # OpenAI-compatible text endpoint (default: http://frmwrk-ai:8080/v1)
 TEXT_MODEL=                  # text model name (default: mistral-small:24b)
 ANTHROPIC_API_KEY=           # required when TEXT_PROVIDER=anthropic
+POLL_INTERVAL=60             # social listener poll interval in seconds
 ```
 
 ## Vision model
 
-The vision step uses a **fine-tuned Qwen2.5-VL-3B-Instruct** model (LoRA, trained on 550+ real porridge photos). It outputs Swedish ingredient descriptions directly — `"Detta är havregröt med lingon och banan."` — rather than generic English descriptions. This feeds the text model more accurate ingredient names with no color-guessing heuristics.
+The vision step uses a **fine-tuned Qwen2.5-VL-3B-Instruct** model (LoRA, trained on 550+ real porridge photos). It outputs Swedish ingredient descriptions directly — `"Detta är havregröt med lingon och banan."` — rather than generic English descriptions. This feeds the text model more accurate ingredient names and is used as the sanity check for community posts (description must contain "gröt").
 
 The fine-tuned model is served by `llama-server-vision` on `frmwrk-ai:8081`. Requests go through `llama-vision-proxy` on `:8082` which converts WebP/BMP/etc to JPEG before forwarding.
 
-Training pipeline is at `/home/martin/claude/training/` on `frmwrk-ai`. A cron job runs every Sunday at 03:00 and retrains automatically when ≥50 new posts have been published since the last training run (scrapes from Directus, augments 10×, fine-tunes ~3.5h).
+Training pipeline is at `/home/martin/claude/training/` on `frmwrk-ai`. A cron job runs every Sunday at 03:00 and retrains automatically when ≥50 new posts have been published since the last training run.
+
+## Airdrop microservice
+
+Community posts that pass the vision check trigger a $GRÖT airdrop via a separate microservice (`grot-social`) running on frmwrk-ai. The microservice handles the SPL Token-2022 transfer using a keypair stored locally on that machine — no keypair on the blog server.
+
+`POST /airdrop` — protected by `x-secret` header. Body: `{"wallet": "...", "amount": 25}`.
+
+## Data
+
+- `quality.db` — quality checker index (post cache, vision descriptions, tag history)
+- `community.db` — community posts from Mastodon/Bluesky + wallet registrations
+
+Both SQLite databases are persisted at `./data/` (volume-mounted).
 
 ### Directus requirements
 

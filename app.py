@@ -14,6 +14,9 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from quality import QualityChecker
+from db_community import init_db as init_community_db
+from listener_mastodon import mastodon_poll_loop
+from listener_bsky import bsky_poll_loop
 
 VISION_BASE_URL = os.getenv("VISION_BASE_URL", "http://frmwrk-ai:8082/v1")
 VISION_MODEL = os.getenv("VISION_MODEL", "qwen2.5vl:3b-gpu")
@@ -108,7 +111,15 @@ async def lifespan(app):
         )
         await _quality_checker.ensure_db()
         await _quality_checker.refresh_index(force=True)
+
+    await init_community_db()
+    mastodon_task = asyncio.create_task(mastodon_poll_loop())
+    bsky_task     = asyncio.create_task(bsky_poll_loop())
+
     yield
+
+    mastodon_task.cancel()
+    bsky_task.cancel()
 
 
 app = FastAPI(lifespan=lifespan)
