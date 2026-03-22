@@ -156,9 +156,7 @@ bash deploy.sh
 | `/tags tag1, tag2` | Replace the tags of the last post |
 | `/delete` | Unpublish the last post (sets to draft) |
 
-## Web UI
 
-A simple web UI at `/` for manual caption generation, protected by HTTP Basic Auth.
 
 ## Admin endpoints
 
