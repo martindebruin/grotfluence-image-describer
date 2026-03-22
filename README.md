@@ -46,7 +46,7 @@ Airdrop 25 $GRÖT to registered wallet (if wallet registered)
 - OpenAI-compatible vision model endpoint (fine-tuned Qwen2.5-VL-3B recommended)
 - OpenAI-compatible text model endpoint, or an Anthropic API key
 - Telegram bot token (from [@BotFather](https://t.me/BotFather))
-- Directus instance with a static API token
+- Directus instance with API token
 - Mastodon bot account + access token
 - Bluesky bot account + app password
 - grot-social airdrop microservice (see below)
@@ -54,10 +54,10 @@ Airdrop 25 $GRÖT to registered wallet (if wallet registered)
 ### Environment variables
 
 ```
-WEB_PASSWORD=                # password for the web UI (username defaults to "martin")
+WEB_PASSWORD=                # password for the web UI 
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_WEBHOOK_SECRET=     # random string — set when registering the webhook
-TELEGRAM_ALLOWED_USER_ID=    # numeric Telegram user ID — get from @userinfobot
+TELEGRAM_ALLOWED_USER_ID=    
 DIRECTUS_URL=                # e.g. https://cms.example.com
 DIRECTUS_TOKEN=              # Directus API token
 BLOG_URL=                    # public blog URL, e.g. https://example.com (posts at /p/{slug})
@@ -67,22 +67,22 @@ MASTODON_INSTANCE=https://mastodon.social
 MASTODON_ACCESS_TOKEN=
 
 # Bluesky community listener
-BSKY_HANDLE=                 # e.g. oat-tracker.bsky.social
+BSKY_HANDLE=                 
 BSKY_APP_PASSWORD=
 
 # $GRÖT airdrop microservice
-AIRDROP_URL=                 # e.g. http://100.98.25.111:8765
-AIRDROP_SECRET=              # shared secret (x-secret header)
+AIRDROP_URL=                 
+AIRDROP_SECRET=             
 AIRDROP_AMOUNT=25
 ```
 
 Optional overrides:
 
 ```
-VISION_BASE_URL=             # OpenAI-compatible vision endpoint (default: http://frmwrk-ai:8082/v1)
+VISION_BASE_URL=             # OpenAI-compatible vision endpoint 
 VISION_MODEL=                # vision model name (default: qwen2.5vl:3b-gpu)
 TEXT_PROVIDER=openai         # "openai" (default) or "anthropic"
-TEXT_BASE_URL=               # OpenAI-compatible text endpoint (default: http://frmwrk-ai:8080/v1)
+TEXT_BASE_URL=               # OpenAI-compatible text endpoint
 TEXT_MODEL=                  # text model name (default: mistral-small:24b)
 ANTHROPIC_API_KEY=           # required when TEXT_PROVIDER=anthropic
 POLL_INTERVAL=60             # social listener poll interval in seconds
@@ -92,13 +92,13 @@ POLL_INTERVAL=60             # social listener poll interval in seconds
 
 The vision step uses a **fine-tuned Qwen2.5-VL-3B-Instruct** model (LoRA, trained on 550+ real porridge photos). It outputs Swedish ingredient descriptions directly — `"Detta är havregröt med lingon och banan."` — rather than generic English descriptions. This feeds the text model more accurate ingredient names and is used as the sanity check for community posts (description must contain "gröt").
 
-The fine-tuned model is served by `llama-server-vision` on `frmwrk-ai:8081`. Requests go through `llama-vision-proxy` on `:8082` which converts WebP/BMP/etc to JPEG before forwarding.
+The fine-tuned model is served by `llama-server-vision` on `dedicated machine`. Requests go through `llama-vision-proxy` on `:8082` which converts WebP/BMP/etc to JPEG before forwarding.
 
-Training pipeline is at `/home/martin/claude/training/` on `frmwrk-ai`. A cron job runs every Sunday at 03:00 and retrains automatically when ≥50 new posts have been published since the last training run.
+Training pipeline is at `/home/martin/claude/training/` on `dedicated machine`. A cron job runs every Sunday at 03:00 and retrains automatically when ≥50 new posts have been published since the last training run.
 
 ## Airdrop microservice
 
-Community posts that pass the vision check trigger a $GRÖT airdrop via a separate microservice (`grot-social`) running on frmwrk-ai. The microservice handles the SPL Token-2022 transfer using a keypair stored locally on that machine — no keypair on the blog server.
+Community posts that pass the vision check trigger a $GRÖT airdrop via a separate microservice (`grot-social`) running on separate server. 
 
 `POST /airdrop` — protected by `x-secret` header. Body: `{"wallet": "...", "amount": 25}`.
 
