@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import base64
 import imghdr
@@ -9,6 +10,9 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 import httpx
 import secrets
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -332,8 +336,21 @@ async def post_to_directus(
         upload_resp.raise_for_status()
         file_id = upload_resp.json()["data"]["id"]
 
-        # Create post
-        slug = _slugify(title)
+        # Create post — resolve slug uniqueness by appending a counter if needed
+        base_slug = _slugify(title)
+        slug = base_slug
+        for attempt in range(1, 20):
+            check = await client.get(
+                f"{DIRECTUS_URL}/items/posts",
+                headers=auth_header,
+                params={"filter[slug][_eq]": slug, "limit": 1, "fields": "id"},
+            )
+            check.raise_for_status()
+            if not check.json()["data"]:
+                break
+            slug = f"{base_slug}-{attempt + 1}"
+        else:
+            slug = f"{base_slug}-{int(datetime.now(ZoneInfo('UTC')).timestamp())}"
         caption_html = f"<p>{caption}</p>"
         post_resp = await client.post(
             f"{DIRECTUS_URL}/items/posts",
@@ -506,7 +523,12 @@ async def _process_telegram_photo(chat_id: int, file_id: str, filename: str, tel
 
         await _publish_and_notify(chat_id, image_bytes, filename, title, caption, meal_type, tags, description, now_stockholm)
 
+    except httpx.HTTPStatusError as e:
+        body = e.response.text[:300] if e.response else ""
+        logger.error("HTTP error in photo pipeline: %s | body: %s", e, body)
+        await send_telegram_message(chat_id, f"Fel: {e}\n{body}")
     except Exception as e:
+        logger.exception("Unhandled error in photo pipeline")
         await send_telegram_message(chat_id, f"Fel: {e}")
 
 
@@ -530,6 +552,7 @@ async def _handle_telegram_command(chat_id: int, text: str) -> None:
                 p["description"], p["now_stockholm"],
             )
         except Exception as e:
+            logger.exception("Unhandled error during /confirm publish")
             await send_telegram_message(chat_id, f"Fel vid publicering: {e}")
         return
 

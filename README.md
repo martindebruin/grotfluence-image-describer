@@ -117,6 +117,8 @@ Collections: `posts`, `categories`, `tags`, `posts_tags` (M2M junction).
 
 Categories and tags are created automatically if they don't exist. Set `one_deselect_action: delete` on the `posts → posts_tags` relation so deleting a post cascades to its junction rows.
 
+Slugs are checked for uniqueness before posting. If a slug already exists (e.g. same title as a past post), a `-2`, `-3`, … suffix is appended automatically.
+
 ### Run
 
 ```bash
@@ -179,3 +181,7 @@ After each publish, `quality.py` runs a set of checks and appends any warnings t
 - **Meal type plausibility** — validates the meal type against the current Stockholm time
 
 The index is loaded from a local SQLite database (`/app/data/quality.db`), seeded from Directus on startup and refreshed hourly.
+
+## Logging
+
+Pipeline errors are logged to stdout via Python's `logging` module and appear in `docker compose logs`. HTTP errors include the response body; unexpected exceptions include a full stack trace. Both are also sent to Telegram.
