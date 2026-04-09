@@ -130,8 +130,20 @@ App listens on port 4545.
 ### Register Telegram webhook
 
 ```bash
-curl "https://api.telegram.org/bot{TOKEN}/setWebhook?url=https://your-domain.com/telegram/webhook&secret_token={WEBHOOK_SECRET}"
+curl -X POST "https://api.telegram.org/bot{TOKEN}/setWebhook" \
+  --data-urlencode "url=https://your-domain.com/telegram/webhook" \
+  --data-urlencode "secret_token={WEBHOOK_SECRET}"
 ```
+
+`secret_token` must match `TELEGRAM_WEBHOOK_SECRET` exactly. Run this after first deploy and any time you redeploy with a changed secret — without it, Telegram won't send the header and every webhook call returns 401.
+
+Verify registration:
+
+```bash
+curl "https://api.telegram.org/bot{TOKEN}/getWebhookInfo"
+```
+
+Response should include `"has_secret_token": true`. If 401 errors appear in logs, re-run `setWebhook`.
 
 ### Deploy
 
