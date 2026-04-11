@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REMOTE_HOST="dediboxtest"
-REMOTE_DIR="/opt/dockers/auto-oat.martindebruin.com"
+REMOTE_HOST="dedibox1"
+REMOTE_DIR="/home/martin/dockers/auto-oat.martindebruin.com"
 
 echo "→ Syncing files..."
 rsync -av --delete \

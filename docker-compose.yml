@@ -33,6 +33,9 @@ services:
       - 8.8.8.8
     extra_hosts:
       - "frmwrk-ai:100.98.25.111"
+    networks:
+      - default
+      - proxy
     restart: unless-stopped
 
   dashboard:
@@ -47,3 +50,7 @@ services:
     ports:
       - "4546:8001"
     restart: unless-stopped
+
+networks:
+  proxy:
+    external: true
