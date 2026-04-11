@@ -2,7 +2,6 @@ fastapi
 uvicorn[standard]
 httpx
 python-multipart
-anthropic
 aiosqlite
 Mastodon.py
 atproto
