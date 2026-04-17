@@ -34,6 +34,7 @@ WEB_PASSWORD = os.getenv("WEB_PASSWORD")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET")
+TELEGRAM_WEBHOOK_URL = os.getenv("TELEGRAM_WEBHOOK_URL")
 TELEGRAM_ALLOWED_USER_ID = os.getenv("TELEGRAM_ALLOWED_USER_ID")
 
 DIRECTUS_URL = os.getenv("DIRECTUS_URL", "https://cms.xn--grtfluence-fcb.se")
@@ -105,6 +106,28 @@ _quality_checker: QualityChecker | None = None
 _pending_post: dict | None = None
 
 
+async def _register_telegram_webhook() -> None:
+    """Register (or re-register) the Telegram webhook on startup so the secret always matches."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_WEBHOOK_URL:
+        return
+    payload: dict = {"url": TELEGRAM_WEBHOOK_URL}
+    if TELEGRAM_WEBHOOK_SECRET:
+        payload["secret_token"] = TELEGRAM_WEBHOOK_SECRET
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/setWebhook",
+                json=payload,
+            )
+            data = resp.json()
+            if data.get("ok"):
+                logger.info("Telegram webhook registered: %s", TELEGRAM_WEBHOOK_URL)
+            else:
+                logger.error("Telegram webhook registration failed: %s", data)
+    except Exception:
+        logger.exception("Error registering Telegram webhook")
+
+
 @asynccontextmanager
 async def lifespan(app):
     global _quality_checker
@@ -115,6 +138,8 @@ async def lifespan(app):
         )
         await _quality_checker.ensure_db()
         await _quality_checker.refresh_index(force=True)
+
+    await _register_telegram_webhook()
 
     await init_community_db()
     mastodon_task = asyncio.create_task(mastodon_poll_loop())

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REMOTE_HOST="dedibox1"
+REMOTE_HOST="dedibox2"
 REMOTE_DIR="/home/martin/dockers/auto-oat.martindebruin.com"
 
 echo "→ Syncing files..."
