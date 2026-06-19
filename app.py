@@ -24,8 +24,8 @@ from listener_bsky import bsky_poll_loop
 
 VISION_BASE_URL = os.getenv("VISION_BASE_URL", "http://frmwrk-ai:8082/v1")
 VISION_MODEL = os.getenv("VISION_MODEL", "qwen2.5vl:3b-gpu")
-TEXT_BASE_URL = os.getenv("TEXT_BASE_URL", "http://frmwrk-ai:8080/v1")
-TEXT_MODEL = os.getenv("TEXT_MODEL", "mistral-small:24b")
+TEXT_BASE_URL = os.getenv("TEXT_BASE_URL", "http://frmwrk-ai:11434/v1")
+TEXT_MODEL = os.getenv("TEXT_MODEL", "qwen3:32b")
 TEXT_PROVIDER = os.getenv("TEXT_PROVIDER", "openai")  # "openai" or "anthropic"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
@@ -142,13 +142,15 @@ async def lifespan(app):
     await _register_telegram_webhook()
 
     await init_community_db()
-    mastodon_task = asyncio.create_task(mastodon_poll_loop())
-    bsky_task     = asyncio.create_task(bsky_poll_loop())
+    mastodon_task  = asyncio.create_task(mastodon_poll_loop())
+    bsky_task      = asyncio.create_task(bsky_poll_loop())
+    keepalive_task = asyncio.create_task(_text_model_keepalive())
 
     yield
 
     mastodon_task.cancel()
     bsky_task.cancel()
+    keepalive_task.cancel()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -221,7 +223,7 @@ async def describe(file: UploadFile = File(...), _: None = Depends(require_auth)
                 },
             )
             resp2.raise_for_status()
-            caption = resp2.json()["choices"][0]["message"]["content"]
+            caption = _strip_thinking(resp2.json()["choices"][0]["message"]["content"])
 
     except httpx.ConnectError as e:
         raise HTTPException(status_code=502, detail=f"Cannot reach model server: {e}")
@@ -283,25 +285,51 @@ async def generate_post_content(description: str, current_time: str, telegram_ca
         raw = msg.content[0].text.strip()
     else:
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=120.0)) as client:
-            resp = await client.post(
-                f"{TEXT_BASE_URL}/chat/completions",
-                json={
-                    "model": TEXT_MODEL,
-                    "stream": False,
-                    "messages": [
-                        {"role": "system", "content": POST_SYSTEM_PROMPT},
-                        {"role": "user", "content": user_message},
-                    ],
-                },
-            )
-            resp.raise_for_status()
-            raw = resp.json()["choices"][0]["message"]["content"].strip()
+            for attempt in range(3):
+                try:
+                    resp = await client.post(
+                        f"{TEXT_BASE_URL}/chat/completions",
+                        json={
+                            "model": TEXT_MODEL,
+                            "stream": False,
+                            "max_tokens": 512,
+                            "chat_template_kwargs": {"enable_thinking": False},
+                            "messages": [
+                                {"role": "system", "content": POST_SYSTEM_PROMPT},
+                                {"role": "user", "content": user_message},
+                            ],
+                        },
+                    )
+                    resp.raise_for_status()
+                    break
+                except (httpx.ConnectError, httpx.RemoteProtocolError) as e:
+                    if attempt < 2:
+                        logger.warning(f"Text model connection failed (attempt {attempt+1}): {e}, retrying in 5s...")
+                        await asyncio.sleep(5)
+                    else:
+                        raise
+            raw = _strip_thinking(resp.json()["choices"][0]["message"]["content"])
 
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
     return json.loads(raw.strip())
+
+
+async def _text_model_keepalive():
+    """Ping the text model every 4 minutes to keep the Tailscale path warm."""
+    while True:
+        await asyncio.sleep(240)
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                await client.get(f"{TEXT_BASE_URL}/models")
+        except Exception:
+            pass
+
+
+def _strip_thinking(text: str) -> str:
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
 def _slugify(text: str) -> str:

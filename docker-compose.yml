@@ -7,7 +7,7 @@ services:
       - VISION_BASE_URL=http://frmwrk-ai:8082/v1
       - VISION_MODEL=qwen2.5vl:3b-gpu
       - TEXT_PROVIDER=${TEXT_PROVIDER:-openai}
-      - TEXT_BASE_URL=http://frmwrk-ai:8080/v1
+      - TEXT_BASE_URL=${TEXT_BASE_URL:-http://frmwrk-ai:8080/v1}
       - TEXT_MODEL=${TEXT_MODEL:-mistral-small:24b}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - PYTHONUNBUFFERED=1
