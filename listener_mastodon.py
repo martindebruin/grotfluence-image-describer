@@ -18,7 +18,29 @@ AIRDROP_URL     = os.getenv("AIRDROP_URL", "")
 AIRDROP_SECRET  = os.getenv("AIRDROP_SECRET", "")
 AIRDROP_AMOUNT  = int(os.getenv("AIRDROP_AMOUNT", "25"))
 VISION_BASE_URL = os.getenv("VISION_BASE_URL", "http://frmwrk-ai:8082/v1")
-VISION_MODEL    = os.getenv("VISION_MODEL", "qwen2.5vl:3b-gpu")
+VISION_MODEL    = os.getenv("VISION_MODEL", "gemma4:e4b")
+
+# Kept in sync with VISION_PROMPT in app.py (app imports this module, so it can't import back).
+VISION_PROMPT = (
+    "Analysera bilden. Svara med EN enda kort mening på svenska, i exakt detta format:\n"
+    '"Detta är <grötsort> med <topping1>, <topping2> och <topping3>."\n'
+    "Nämn bara det som faktiskt syns i bilden. Använd alltid ordet \"gröt\" i grötsorten "
+    "(t.ex. havregröt, mannagrynsgröt, risgrynsgröt).\n"
+    "Om bilden inte föreställer gröt, svara med exakt: INTE_GRÖT\n"
+    "Ingen rubrik, ingen punktlista, ingen förklaring, inga emojis — bara meningen."
+)
+
+
+def _is_porridge_text(text: str) -> bool:
+    # Not a bare "gröt" substring check: the prompt tells the model to always use that word,
+    # so "Detta är inte gröt" would match. INTE_GRÖT is the explicit rejection sentinel.
+    t = (text or "").strip()
+    if not t or t.upper().startswith("INTE_GRÖT"):
+        return False
+    low = t.lower()
+    if "inte gröt" in low:  # in case the model phrases the rejection instead of using the sentinel
+        return False
+    return "gröt" in low
 
 _WALLET_RE = re.compile(r"[1-9A-HJ-NP-Za-km-z]{32,44}")
 _followed: set[str] = set()
@@ -30,7 +52,7 @@ def _strip_html(text: str) -> str:
 
 async def _is_porridge(image_url: str) -> bool:
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=180.0)) as client:
             img_resp = await client.get(image_url)
             img_resp.raise_for_status()
             content_type = img_resp.headers.get("content-type", "image/jpeg").split(";")[0]
@@ -41,15 +63,22 @@ async def _is_porridge(image_url: str) -> bool:
                     "model": VISION_MODEL,
                     "messages": [{"role": "user", "content": [
                         {"type": "image_url", "image_url": {"url": f"data:{content_type};base64,{img_b64}"}},
-                        {"type": "text", "text": "Analysera bilden och beskriv exakt vilken grötsort och vilka toppings/tillbehör som syns."},
+                        {"type": "text", "text": VISION_PROMPT},
                     ]}],
-                    "max_tokens": 100,
+                    # Without enable_thinking=False, gemma4 burns the whole budget on
+                    # chain-of-thought and returns an empty string — which reads as "not
+                    # porridge" and silently rejects a real post.
+                    "chat_template_kwargs": {"enable_thinking": False},
+                    "max_tokens": 600,
                     "temperature": 0,
                 },
             )
             resp.raise_for_status()
-            description = resp.json()["choices"][0]["message"]["content"].strip()
-            result = "gröt" in description.lower()
+            description = (resp.json()["choices"][0]["message"].get("content") or "").strip()
+            if not description:
+                logger.warning("[mastodon] Vision returned empty description — allowing post")
+                return True
+            result = _is_porridge_text(description)
             logger.info("[mastodon] Vision: %s → %s", description[:80], "gröt" if result else "EJ gröt")
             return result
     except Exception as e:

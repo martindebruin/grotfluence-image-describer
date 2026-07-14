@@ -5,11 +5,12 @@ services:
     env_file: identity.env
     environment:
       # non-secret config; real secrets injected at runtime by boot.py from Infisical
+      # gemma4:e4b on :8082 is the unified vision+chat model — it serves both steps.
       - VISION_BASE_URL=http://frmwrk-ai:8082/v1
-      - VISION_MODEL=qwen2.5vl:3b-gpu
+      - VISION_MODEL=gemma4:e4b
       - TEXT_PROVIDER=openai
-      - TEXT_BASE_URL=http://frmwrk-ai:8084/v1
-      - TEXT_MODEL=qwen2.5:14b
+      - TEXT_BASE_URL=http://frmwrk-ai:8082/v1
+      - TEXT_MODEL=gemma4:e4b
       - PYTHONUNBUFFERED=1
       - WEB_USERNAME=martin
       - TELEGRAM_WEBHOOK_URL=https://auto-oat.martindebruin.com/telegram/webhook

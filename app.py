@@ -23,9 +23,9 @@ from listener_mastodon import mastodon_poll_loop
 from listener_bsky import bsky_poll_loop
 
 VISION_BASE_URL = os.getenv("VISION_BASE_URL", "http://frmwrk-ai:8082/v1")
-VISION_MODEL = os.getenv("VISION_MODEL", "qwen2.5vl:3b-gpu")
-TEXT_BASE_URL = os.getenv("TEXT_BASE_URL", "http://frmwrk-ai:11434/v1")
-TEXT_MODEL = os.getenv("TEXT_MODEL", "qwen3:32b")
+VISION_MODEL = os.getenv("VISION_MODEL", "gemma4:e4b")
+TEXT_BASE_URL = os.getenv("TEXT_BASE_URL", "http://frmwrk-ai:8082/v1")
+TEXT_MODEL = os.getenv("TEXT_MODEL", "gemma4:e4b")
 TEXT_PROVIDER = os.getenv("TEXT_PROVIDER", "openai")  # "openai" or "anthropic"
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
@@ -47,6 +47,66 @@ MEDIA_TYPES = {
     "gif": "image/gif",
     "webp": "image/webp",
 }
+
+# The vision model is a general-purpose one (gemma4:e4b), not the old grötblogg fine-tune,
+# so the terse Swedish "Detta är havregröt med ..." format has to be asked for explicitly.
+# Downstream code depends on that format: the community listeners check for "gröt" and
+# quality.py matches tags against this text.
+VISION_PROMPT = (
+    "Analysera bilden. Svara med EN enda kort mening på svenska, i exakt detta format:\n"
+    '"Detta är <grötsort> med <topping1>, <topping2> och <topping3>."\n'
+    "Nämn bara det som faktiskt syns i bilden. Använd alltid ordet \"gröt\" i grötsorten "
+    "(t.ex. havregröt, mannagrynsgröt, risgrynsgröt).\n"
+    "Om bilden inte föreställer gröt, svara med exakt: INTE_GRÖT\n"
+    "Ingen rubrik, ingen punktlista, ingen förklaring, inga emojis — bara meningen."
+)
+
+# The community gate can't just substring-match "gröt": the prompt above tells the model to
+# always use that word, so a rejection like "Detta är inte gröt" would match too. Hence the
+# explicit INTE_GRÖT sentinel.
+NOT_PORRIDGE = "INTE_GRÖT"
+
+
+def is_porridge_description(text: str) -> bool:
+    t = (text or "").strip()
+    if not t or t.upper().startswith(NOT_PORRIDGE):
+        return False
+    low = t.lower()
+    if "inte gröt" in low:  # in case the model phrases the rejection instead of using the sentinel
+        return False
+    return "gröt" in low
+
+
+def _vision_request(img_b64: str, mime: str) -> dict:
+    """Body for a vision call.
+
+    enable_thinking=False matters: without it gemma4 emits ~730 tokens of chain-of-thought
+    into a separate reasoning_content field before answering, so a small max_tokens returns
+    an empty content string rather than failing. With it, this call is ~2s instead of ~27s.
+    max_tokens stays generous as a backstop in case the flag is ever ignored.
+    """
+    return {
+        "model": VISION_MODEL,
+        "stream": False,
+        "max_tokens": 600,
+        "temperature": 0,
+        "chat_template_kwargs": {"enable_thinking": False},
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": VISION_PROMPT},
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
+        ]}],
+    }
+
+
+def _vision_text(resp_json: dict) -> str:
+    """Pull the description out of a vision response, failing loudly on an empty one."""
+    text = (resp_json["choices"][0]["message"].get("content") or "").strip()
+    if not text:
+        raise ValueError(
+            "vision model returned empty content "
+            "(likely spent its whole token budget on chain-of-thought)"
+        )
+    return text
 
 SYSTEM_PROMPT = (
     "Du är en sarkastisk svensk grötbloggare som driver bloggen grötfluence.se. "
@@ -198,17 +258,10 @@ async def describe(file: UploadFile = File(...), _: None = Depends(require_auth)
             # Step 1: vision model describes the image
             resp = await client.post(
                 f"{VISION_BASE_URL}/chat/completions",
-                json={
-                    "model": VISION_MODEL,
-                    "stream": False,
-                    "messages": [{"role": "user", "content": [
-                        {"type": "text", "text": "Analysera bilden och beskriv exakt vilken grötsort och vilka toppings/tillbehör som syns."},
-                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{img_b64}"}},
-                    ]}],
-                },
+                json=_vision_request(img_b64, mime),
             )
             resp.raise_for_status()
-            visual_description = resp.json()["choices"][0]["message"]["content"]
+            visual_description = _vision_text(resp.json())
 
             # Step 2: text model writes the sarcastic Swedish caption
             resp2 = await client.post(
@@ -216,6 +269,8 @@ async def describe(file: UploadFile = File(...), _: None = Depends(require_auth)
                 json={
                     "model": TEXT_MODEL,
                     "stream": False,
+                    "max_tokens": 512,
+                    "chat_template_kwargs": {"enable_thinking": False},
                     "messages": [
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": f"Dagens datum: {date.today().strftime('%A %d %B %Y')}.\nHär är en beskrivning av dagens gröt: {visual_description}\n\nSkriv en bildtext till bloggen."},
@@ -528,17 +583,10 @@ async def _process_telegram_photo(chat_id: int, file_id: str, filename: str, tel
         async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, read=300.0)) as client:
             resp = await client.post(
                 f"{VISION_BASE_URL}/chat/completions",
-                json={
-                    "model": VISION_MODEL,
-                    "stream": False,
-                    "messages": [{"role": "user", "content": [
-                        {"type": "text", "text": "Analysera bilden och beskriv exakt vilken grötsort och vilka toppings/tillbehör som syns."},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                    ]}],
-                },
+                json=_vision_request(img_b64, "image/jpeg"),
             )
             resp.raise_for_status()
-            description = resp.json()["choices"][0]["message"]["content"]
+            description = _vision_text(resp.json())
 
         # Local text model: title, caption, meal_type, tags
         now_stockholm = datetime.now(ZoneInfo("Europe/Stockholm"))
@@ -802,17 +850,10 @@ async def _run_vision_backfill() -> None:
                     try:
                         vision_resp = await client.post(
                             f"{VISION_BASE_URL}/chat/completions",
-                            json={
-                                "model": VISION_MODEL,
-                                "stream": False,
-                                "messages": [{"role": "user", "content": [
-                                    {"type": "text", "text": "Analysera bilden och beskriv exakt vilken grötsort och vilka toppings/tillbehör som syns."},
-                                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                                ]}],
-                            },
+                            json=_vision_request(img_b64, "image/jpeg"),
                         )
                         vision_resp.raise_for_status()
-                        description = vision_resp.json()["choices"][0]["message"]["content"]
+                        description = _vision_text(vision_resp.json())
                         break
                     except (httpx.HTTPStatusError, httpx.RemoteProtocolError) as e:
                         if attempt < 2:
