@@ -1,32 +1,28 @@
 services:
   image-describer:
     build: .
-    ports:
-      - "4545:4545"
+    container_name: auto-oat
+    env_file: identity.env
     environment:
+      # non-secret config; real secrets injected at runtime by boot.py from Infisical
       - VISION_BASE_URL=http://frmwrk-ai:8082/v1
       - VISION_MODEL=qwen2.5vl:3b-gpu
-      - TEXT_PROVIDER=${TEXT_PROVIDER:-openai}
-      - TEXT_BASE_URL=${TEXT_BASE_URL:-http://frmwrk-ai:8080/v1}
-      - TEXT_MODEL=${TEXT_MODEL:-mistral-small:24b}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - TEXT_PROVIDER=openai
+      - TEXT_BASE_URL=http://frmwrk-ai:8084/v1
+      - TEXT_MODEL=qwen2.5:14b
       - PYTHONUNBUFFERED=1
-      - WEB_USERNAME=${WEB_USERNAME:-martin}
-      - WEB_PASSWORD=${WEB_PASSWORD}
-      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-      - TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET}
-      - TELEGRAM_WEBHOOK_URL=${TELEGRAM_WEBHOOK_URL}
-      - TELEGRAM_ALLOWED_USER_ID=${TELEGRAM_ALLOWED_USER_ID}
-      - DIRECTUS_URL=${DIRECTUS_URL}
-      - DIRECTUS_TOKEN=${DIRECTUS_TOKEN}
-      - BLOG_URL=${BLOG_URL}
-      - MASTODON_INSTANCE=${MASTODON_INSTANCE:-https://mastodon.social}
-      - MASTODON_ACCESS_TOKEN=${MASTODON_ACCESS_TOKEN}
-      - BSKY_HANDLE=${BSKY_HANDLE}
-      - BSKY_APP_PASSWORD=${BSKY_APP_PASSWORD}
-      - AIRDROP_URL=${AIRDROP_URL:-http://100.98.25.111:8765}
-      - AIRDROP_SECRET=${AIRDROP_SECRET}
-      - AIRDROP_AMOUNT=${AIRDROP_AMOUNT:-25}
+      - WEB_USERNAME=martin
+      - TELEGRAM_WEBHOOK_URL=https://auto-oat.martindebruin.com/telegram/webhook
+      - TELEGRAM_ALLOWED_USER_ID=7105839719
+      - DIRECTUS_URL=http://grot-directus:8055
+      - BLOG_URL=https://xn--grtfluence-fcb.se
+      - MASTODON_INSTANCE=https://mastodon.social
+      - MASTODON_ACCESS_TOKEN=
+      - BSKY_HANDLE=
+      - BSKY_APP_PASSWORD=
+      - AIRDROP_URL=http://100.98.25.111:8765
+      - AIRDROP_SECRET=
+      - AIRDROP_AMOUNT=25
     volumes:
       - ./data:/app/data
     dns:
@@ -48,8 +44,6 @@ services:
       --host 0.0.0.0
       --port 8001
       --setting default_cache_ttl 0
-    ports:
-      - "4546:8001"
     restart: unless-stopped
 
 networks:

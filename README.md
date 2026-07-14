@@ -147,9 +147,25 @@ Response should include `"has_secret_token": true`. If 401 errors appear in logs
 
 ### Deploy
 
-```bash
-bash deploy.sh
-```
+Production runs on **dedibox3** at `/home/martin/dockers/auto-oat/` (container `auto-oat`).
+
+Secrets are **not** read from `.env` in production. `docker-compose.yml` loads `identity.env`
+(an Infisical machine identity), and the container's entrypoint is `boot.py`, which:
+
+1. logs in to Infisical with that identity,
+2. fetches the real secrets (`WEB_PASSWORD`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`,
+   `DIRECTUS_TOKEN`) and puts them in the process environment,
+3. drops the identity credentials, then `exec`s uvicorn.
+
+So real secrets live only in the process env — never on disk, never in `docker inspect`.
+Everything else (URLs, model names) is plain non-secret config in `docker-compose.yml`.
+
+`identity.env` holds a client secret and is gitignored — see `identity.env.example`. It exists
+only on the server; recreate it there, never commit it.
+
+> ⚠️ `deploy.sh` is **stale and unsafe to run as-is**: it targets the wrong host and does
+> `rsync --delete` without excluding `identity.env`, so it would delete the server's Infisical
+> identity. Deploy by hand until it's fixed.
 
 ## Telegram usage
 
