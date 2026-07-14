@@ -13,6 +13,10 @@ echo "→ Syncing files..."
 # And two must never be uploaded:
 #   .env, .env~   — local secrets ('.env' alone does NOT match the '.env~' backup)
 #   .git/         — full history; no reason for it to sit on the server
+#
+# docker-compose.yml IS synced: the repo's copy is prod's copy (see 34380a5), and the
+# model config (VISION_MODEL / TEXT_BASE_URL) lives in it — excluding it would deploy
+# new code against stale model endpoints.
 rsync -av --delete \
   --exclude='.env' \
   --exclude='.env.*' \
